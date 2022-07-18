@@ -23,7 +23,7 @@
 </template>
 
 <script>
-import { ref, onBeforeMount, onUnmounted } from 'vue';
+import { ref, onBeforeMount, onUnmounted, onMounted } from 'vue';
 import { useStore } from 'vuex';
 import HeaderView from './components/HeaderView.vue';
 import ListView from './components/ListView.vue';
@@ -37,12 +37,13 @@ export default {
     ListView,
     FooterView,
   },
+
   setup() {
     const store = useStore();
     const isReset = ref(false);
     const isShow = ref(false);
     // 重置
-    // TDOO: 2022-07-15 数据同步问题
+    // TDOO: 2022-07-15 new feature: 数据同步问题
     const handleResetAndRefresh = async () => {
       isReset.value = true;
       (await store.dispatch('todos/getAllTodo'))
@@ -53,14 +54,13 @@ export default {
         : ElMessage('同步数据失败！');
       isReset.value = false;
     };
-
     // 挂时数据初始化
     onBeforeMount(async () => {
       // TODO: 2022-07-15 bug: 页面切出后定时器被删除问题
       await store.dispatch('todos/getAllTodo');
-      // TODO: 2022-07-15 feature: 整点数据同步问题
+      // TODO: 2022-07-15 new feature: 整点数据同步问题
     });
-
+    onMounted(async () => {});
     onUnmounted(() => {});
     return {
       isReset,
@@ -85,9 +85,6 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-// .dialog-footer button:first-child {
-//   margin-right: 10px;
-// }
 .el-message-box {
   width: 350px !important;
   background-color: rgb(200, 200, 200) !important;

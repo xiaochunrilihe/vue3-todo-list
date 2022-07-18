@@ -12,7 +12,7 @@
     "lint": "eslint ./src/* --ext .vue,.js,.ts,.jsx,.tsx --fix",
     "format": "prettier --write ./**/*.{vue,ts,tsx,js,jsx,css,less,scss,json,md}",
     "commit": "cz",
-    "genChangeLog":"conventional-changelog -p angular -i CHANGELOG.md -s"
+    "genChangeLog": "conventional-changelog -p angular -i CHANGELOG.md -s"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.0.6",

@@ -40,9 +40,16 @@ const mutations = {
       return result;
     }, []);
   },
-  // 添加 todo
+  // 添加 todo，任务开始时间由早到晚
   addTodo(state, { todoObj = {} }) {
-    state.todos.unshift(todoObj);
+    for (let i = state.todos.length - 1; i >= 0; i--) {
+      if (state.todos[i].startTime < todoObj.startTime) {
+        // array.splice(index,howmany,item1,.....,itemX)
+        state.todos.splice(i + 1, 0, todoObj);
+        return false;
+      }
+    }
+    return true;
   },
   // 更新 todo
   updateTodo(state, { doneTodos = [] }) {
@@ -92,15 +99,15 @@ const actions = {
       reslove(state.todos.some((todo) => todo.name === name));
     });
   },
-  // 新任务有效性检测
-  checkNewTaskTime({ state }, startTime) {
+  // 新任务冲突检测
+  checkTimeConflict({ state }, startTime) {
     return new Promise((reslove) => {
       let tmpList = state.todos.filter(
         (item) => item.status === utilData.TASKSTATUS.CREATED
       );
       // 新任务开始时间必须大于最后一个任务的开始时间5分钟，新任务持续时间必须大于5分钟
       let res = tmpList.some((it) => {
-        return startTime - it.startTime < 300000;
+        return Math.abs(startTime - it.startTime) < 300000;
       });
       reslove(res);
     });
@@ -126,59 +133,6 @@ const actions = {
     const todos = await network.getTodos();
     commit('setTodo', todos);
     commit('saveLocal');
-  },
-
-  // 异步创建定时器
-  createTimer({ state }, obj) {
-    return new Promise((reslove) => {
-      let num = utilData.NOTIFYFREQ;
-      let timer = null;
-      // 重复提醒
-      function repeatNotice() {
-        // 设定时间前检查当前任务状态是否为已完成
-        if (state.doneTodos.indexOf(obj.todoObj.id) >= 0) {
-          clearTimeout(timer); // 清除定时器
-          timer = null;
-          return;
-        } else if (
-          state.todos.filter((item) => item.id === obj.todoObj.id).length <= 0
-        ) {
-          clearTimeout(timer); // 清除定时器
-          timer = null;
-          return;
-        }
-        if (num == 0) {
-          clearTimeout(timer); // 清除定时器
-          timer = null;
-          // 如果该任务状态为 创建，则重置为 未完成
-          for (let i = 0; i < state.todos.length; i++) {
-            if (
-              state.todos[i].id === obj.todoObj.id &&
-              state.todos[i].status === utilData.TASKSTATUS.CREATED
-            ) {
-              state.todos[i].status = utilData.TASKSTATUS.UNDONE;
-              return;
-            }
-          }
-          return;
-        } else {
-          // 播放音效
-          obj.noticeTag.play();
-          // 震动
-          if (window.navigator.vibrate) {
-            window.navigator.vibrate([200, 100, 200]);
-          }
-          timer = setTimeout(repeatNotice, 120000); // 每隔两分钟，递归调用一次
-        }
-        num--;
-      }
-      // 创建延迟定时器，默认提前5分钟
-      timer = setTimeout(
-        repeatNotice,
-        obj.todoObj.startTime - obj.todoObj.id - 300000
-      );
-      reslove(true);
-    });
   },
 };
 

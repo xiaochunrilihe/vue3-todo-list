@@ -29,8 +29,8 @@
       >
         <template #prepend>
           <el-time-picker
-            v-model="endTime"
-            placeholder="截至时间"
+            v-model="pickTime"
+            placeholder="开始时间"
             format="HH:mm"
             style="width: 100px; !important"
           />
@@ -57,7 +57,7 @@
   <!-- 注意音频文件路径 -->
   <audio
     id="noticeTag"
-    src="../../src/assets/newTaskPleaseHandle.mp3"
+    src="./assets/newTaskPleaseHandle.mp3"
     preload="auto"
     type="audio/mpeg"
   ></audio>
@@ -74,8 +74,6 @@ import { ElMessage } from 'element-plus';
 export default {
   name: 'HeaderView',
   props: {},
-  // 可以省略不写，只是申明方面后续维护
-  // emits: ['update:checkAll', 'update:isIndeterminate'],
   setup() {
     const store = useStore();
     // 输入框变量
@@ -85,9 +83,29 @@ export default {
     // 进度条颜色
     const customColors = utilData.CUSTOMCOLORS;
     // 时间选择器
-    const endTime = ref(new Date());
-    const lastEndTime = ref(new Date());
+    const pickTime = ref(new Date());
     let noticeTag = null;
+
+    // 时间选项器处理
+    // TODO: 2022-07-18 根据当前时间确定哪些时间不能选择，考虑使用 vuex getter实现
+    const handlerTimerPickerLoseFocus = (e) => {
+      console.log('e: ', e);
+    };
+
+    // Native.js 变量
+    let main = null; //获取activity
+    let receiver = null;
+    let PendingIntent = null;
+    let pendingIntent = null;
+    let AlarmManager = null;
+    let Context = null;
+    let alarmManager = null;
+    let System = null;
+    let IntentFilter = null;
+    let Intent = null;
+    let filter = null;
+    let taskOrder = 0;
+
     // 点击添加
     const updateTodo = async (key) => {
       if (store.getters['todos/todosLen'] >= 10) {
@@ -95,17 +113,17 @@ export default {
         todo.value = '';
         return;
       }
-      if (endTime.value === null || endTime.value === undefined) {
-        ElMessage.warning('忘了设置截止时间？');
+      if (pickTime.value === null || pickTime.value === undefined) {
+        ElMessage.warning('忘了设置开始时间？');
         return;
       }
       let todoObj = {
         id: String(new Date().valueOf()),
         name: key,
-        startTime: endTime.value.getTime(),
+        startTime: pickTime.value.getTime(),
         status: utilData.TASKSTATUS.CREATED,
       };
-      if (todoObj.startTime - todoObj.id <= 300000) {
+      if (Math.abs(todoObj.startTime - todoObj.id) <= 300000) {
         ElMessage.warning('任务时间太短了');
         return;
       }
@@ -118,44 +136,116 @@ export default {
         ElMessage.warning('已经有相同的任务了');
         return;
       }
-
-      if (lastEndTime.value.getTime() === endTime.value.getTime()) {
-        ElMessage.warning('截止时间修改下吧');
-        return;
-      }
-      let isConflict = await store.dispatch(
-        'todos/checkNewTaskTime',
-        todoObj.startTime
-      );
-      if (isConflict) {
+      if (await store.dispatch('todos/checkTimeConflict', todoObj.startTime)) {
         ElMessage.warning('任务时间冲突了');
         return;
       }
-      ElMessage.closeAll();
       // 更新列表
-      store.commit({ type: 'todos/addTodo', todoObj });
+      if (store.commit({ type: 'todos/addTodo', todoObj })) {
+        ElMessage.warning('新建任务失败');
+        return;
+      }
+      ElMessage.closeAll();
       store.commit('todos/saveLocal');
       todo.value = '';
-      lastEndTime.value = endTime.value;
-      // 异步创建定时器
-      await store.dispatch('todos/createTimer', { todoObj, noticeTag });
+      // 默认向后偏移30分钟
+      pickTime.value = new Date(todoObj.startTime + 1800000);
+      // TODO: 2022-07-17 是否能将定时器逻辑转移到todo.js中
+      // Native.js创建定时器，接收闹钟发出的广播
+      let receiver = plus.android.implements(
+        'io.dcloud.feature.internal.reflect.BroadcastReceiver',
+        {
+          onReceive: function (context, intent) {
+            // 实现onReceiver回调函数
+            plus.android.importClass(intent); // 通过intent实例引入intent类，方便以后的‘.’操作
+            if (
+              intent.getAction() !== todoObj.id || // 是否为对应的广播消息
+              store.state.todos.todos.filter((item) => item.id === todoObj.id)
+                .length <= 0 || // 任务是否存在
+              store.state.todos.doneTodos.indexOf(todoObj.id) >= 0 // 任务状态是否为已完成
+            ) {
+              return;
+            }
+            // 获取提醒次数
+            // public int getIntExtra(String name, int defaultValue)
+            let timerCnt = intent.getIntExtra(todoObj.id, 0);
+            timerCnt++;
+            // 提醒次数是否超过 3 次
+            if (timerCnt <= utilData.NOTIFYFREQ) {
+              let options = { cover: false };
+              plus.push.createMessage(
+                utilData.str2Time(todoObj.startTime) + ' ' + todoObj.name,
+                'LocalMSG',
+                options
+              );
+              // 震动
+              plus.device.vibrate();
+              // 播放提示音
+              noticeTag.play();
+              // 重新设置定时器
+              // 设置新的Intent，传递新的提醒次数
+              let newIntent = new Intent(todoObj.id);
+              newIntent.putExtra(todoObj.id, timerCnt);
+              pendingIntent = PendingIntent.getBroadcast(
+                main,
+                taskOrder,
+                newIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT
+              );
+              // 60000 * (4 - timerCnt) 表示距离开始时间第 3 和第 2 分钟提醒
+              alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                todoObj.startTime - 60000 * (4 - timerCnt),
+                pendingIntent
+              );
+            } else {
+              // 如果该任务状态仍然为 创建，则重置为 未完成
+              for (let i = 0; i < store.state.todos.todos.length; i++) {
+                if (
+                  store.state.todos.todos[i].id === todoObj.id &&
+                  store.state.todos.todos[i].status ===
+                    utilData.TASKSTATUS.CREATED
+                ) {
+                  store.state.todos.todos[i].status =
+                    utilData.TASKSTATUS.UNDONE;
+                  break;
+                }
+              }
+            }
+          },
+        }
+      );
+      // 重复变量
+      alarmManager = main.getSystemService(Context.ALARM_SERVICE);
+      filter = new IntentFilter();
+      filter.addAction(todoObj.id);
+      main.registerReceiver(receiver, filter); // 注册监听
+      // public Intent putExtra (String name, int value)
+      let newIntent = new Intent(todoObj.id);
+      newIntent.putExtra(todoObj.id, 0);
+      pendingIntent = PendingIntent.getBroadcast(
+        main,
+        taskOrder,
+        newIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT
+      );
+      // 第1次定时，默认提前5分钟
+      alarmManager.setExactAndAllowWhileIdle(
+        AlarmManager.RTC_WAKEUP,
+        todoObj.startTime - 300000,
+        pendingIntent
+      );
+      taskOrder++;
     };
 
-    // 写法1：直接使用props属性传递（推荐）
+    // 开关灯
     const lightBtn = () => {
-      // props.togDark();
-      // 暗黑主题
       const isDark = useDark();
       const toggleDark = useToggle(isDark);
       toggleDark();
     };
-    // // 写法2：使用 计算属性，如果有复杂计算，可以使用此种方式
-    // const btnMsg = computed(() => {
-    //     console.log("isBgDark.value = " + props.isBgDark);
-    //     return props.isBgDark ? "深色" : "亮色";
-    // });
-    onBeforeMount(() => {});
-    onMounted(() => {
+    // DOM挂载前
+    onBeforeMount(() => {
       // 设定日期标题
       let date = new Date();
       let year = date.getFullYear();
@@ -168,8 +258,7 @@ export default {
         date.getDate() +
         '日 ' +
         utilData.WEEKCHINESE[date.getDay()];
-      noticeTag = document.getElementById('noticeTag');
-      // 自动开启暗黑模式，夏季7月8月为20:00, 其他时间为19:00
+      // 自动开启暗黑模式，夏季7月和8月为20:00, 其他时间为19:00
       let setTimeStr = year + '-' + (month + 1) + '-' + day;
       if (month === 6 || month === 7) {
         setTimeStr += ' 20:00:00';
@@ -179,10 +268,35 @@ export default {
       let setTime = new Date(setTimeStr);
       let darkTimer = setTimeout(() => {
         const isDark = useDark();
-        const toggleDark = useToggle(isDark);
-        toggleDark();
+        if (!isDark) {
+          const toggleDark = useToggle(isDark);
+          toggleDark();
+        }
         clearTimeout(darkTimer);
       }, setTime.getTime() - date.getTime());
+    });
+    // DOM挂载后
+    onMounted(() => {
+      // 监听 Native.js plus 是否加载完成
+      document.addEventListener(
+        'plusready',
+        function () {
+          // Native.js 变量初始化
+          plus.device.setWakelock(true);
+          main = plus.android.runtimeMainActivity(); //获取activity
+          Intent = plus.android.importClass('android.content.Intent');
+          PendingIntent = plus.android.importClass('android.app.PendingIntent');
+          AlarmManager = plus.android.importClass('android.app.AlarmManager');
+          Context = plus.android.importClass('android.content.Context');
+          System = plus.android.importClass('java.lang.System');
+          IntentFilter = plus.android.importClass(
+            'android.content.IntentFilter'
+          );
+        },
+        false
+      );
+      // 获取 audio tag
+      noticeTag = document.getElementById('noticeTag');
     });
 
     return {
@@ -192,8 +306,23 @@ export default {
       lightBtn,
       dateTitle,
       customColors,
-      endTime,
+      pickTime,
       noticeTag,
+      main,
+      receiver,
+      PendingIntent,
+      pendingIntent,
+      AlarmManager,
+      Context,
+      alarmManager,
+      System,
+      IntentFilter,
+      Intent,
+      filter,
+      taskOrder,
+      // disabledHours,
+      // disabledMinutes,
+      handlerTimerPickerLoseFocus,
     };
   },
 };
